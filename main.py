@@ -1,212 +1,143 @@
-import os
-import subprocess
-import socket
-import psutil
-import time
-import platform
-from cryptography.fernet import Fernet
-from datetime import datetime
-import ipaddress
+const express = require('express');
+const os = require('os');
+const crypto = require('crypto');
+const { execSync } = require('child_process');
+const ps = require('ps-node');
+const fs = require('fs');
+const path = require('path');
 
-# Fungsi untuk menghasilkan kunci enkripsi
-def generate_key():
-    return Fernet.generate_key()
+// Fungsi untuk menghasilkan kunci enkripsi
+function generateKey() {
+    return crypto.randomBytes(32).toString('hex');
+}
 
-# Fungsi untuk mengenkripsi log
-def encrypt_log(log_message, key):
-    cipher_suite = Fernet(key)
-    encrypted_message = cipher_suite.encrypt(log_message.encode())
-    return encrypted_message
+// Fungsi untuk mengenkripsi log
+function encryptLog(logMessage, key) {
+    const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), Buffer.alloc(16, 0));
+    let encryptedMessage = cipher.update(logMessage, 'utf8', 'hex');
+    encryptedMessage += cipher.final('hex');
+    return encryptedMessage;
+}
 
-# Fungsi untuk mencatat log dengan enkripsi
-def log_event(message, key):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    encrypted_message = encrypt_log(f"{timestamp} - {message}", key)
-    with open("defense_log.enc", "ab") as log_file:
-        log_file.write(encrypted_message + b"\n")
+// Fungsi untuk mencatat log dengan enkripsi
+function logEvent(message, key) {
+    const timestamp = new Date().toISOString();
+    const encryptedMessage = encryptLog(`${timestamp} - ${message}`, key);
+    fs.appendFileSync('defense_log.enc', encryptedMessage + '\n');
+}
 
-# Fungsi untuk memonitor koneksi jaringan yang mencurigakan
-def monitor_network(key):
-    suspicious_ports = [22, 80, 443]  # Contoh: port yang harus diawasi
-    connections = psutil.net_connections(kind='inet')
-    
-    ip_packet_count = {}
-    for conn in connections:
-        if conn.laddr.port in suspicious_ports and conn.status == 'ESTABLISHED':
-            alert_message = f"Suspicious connection detected on port {conn.laddr.port} - IP Address: {conn.raddr.ip} - Status: {conn.status}"
-            print(f"[ALERT] {alert_message}")
-            log_event(alert_message, key)
-        
-        # Hitung paket per IP
-        if conn.raddr:
-            ip = conn.raddr.ip
-            if ip in ip_packet_count:
-                ip_packet_count[ip] += 1
-            else:
-                ip_packet_count[ip] = 1
-    
-    # Blokir IP yang melebihi 50 paket per detik
-    for ip, count in ip_packet_count.items():
-        if count > 50:
-            block_ip(ip, key)
+// Fungsi untuk memonitor koneksi jaringan yang mencurigakan
+function monitorNetwork(key) {
+    const suspiciousPorts = [22, 80, 443]; // Contoh: port yang harus diawasi
+    const connections = execSync('netstat -an').toString();
+    const lines = connections.split('\n');
+    let ipPacketCount = {};
 
-# Fungsi untuk memblokir IP
-def block_ip(ip, key):
-    system = platform.system()
-    if system == 'Linux':
-        rule = f"iptables -A INPUT -s {ip} -j DROP"
-    elif system == 'Windows':
-        rule = f"netsh advfirewall firewall add rule name=\"Block {ip}\" dir=in action=block remoteip={ip}"
-    
-    try:
-        subprocess.run(rule, shell=True, check=True)
-        alert_message = f"Blocked IP: {ip} for exceeding packet limit"
-        print(f"[ALERT] {alert_message}")
-        log_event(alert_message, key)
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Failed to block IP: {ip}")
-        print(f" - Error: {e}")
+    lines.forEach((line) => {
+        suspiciousPorts.forEach((port) => {
+            if (line.includes(`:${port}`) && line.includes('ESTABLISHED')) {
+                const parts = line.trim().split(/\s+/);
+                const ipAddress = parts[2].split(':')[0];
+                const alertMessage = `Suspicious connection detected on port ${port} - IP Address: ${ipAddress} - Status: ESTABLISHED`;
+                console.log(`[ALERT] ${alertMessage}`);
+                logEvent(alertMessage, key);
 
-# Fungsi untuk memblokir paket ICMP, IGMP, dan RAW
-def block_unwanted_packets():
-    system = platform.system()
-    if system == 'Linux':
-        rules = [
-            "iptables -A INPUT -p icmp -j DROP",
-            "iptables -A INPUT -p igmp -j DROP",
-            "iptables -A INPUT -p raw -j DROP"
-        ]
-    elif system == 'Windows':
-        rules = [
-            "netsh advfirewall firewall add rule name=\"Block ICMP\" dir=in action=block protocol=ICMPv4",
-            "netsh advfirewall firewall add rule name=\"Block IGMP\" dir=in action=block protocol=2",
-            "netsh advfirewall firewall add rule name=\"Block RAW\" dir=in action=block protocol=255"
-        ]
-    
-    for rule in rules:
-        try:
-            subprocess.run(rule, shell=True, check=True)
-            print(f"[INFO] Applied packet block rule: {rule}")
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to apply packet block rule: {rule}")
-            print(f" - Error: {e}")
+                // Hitung paket per IP
+                ipPacketCount[ipAddress] = (ipPacketCount[ipAddress] || 0) + 1;
+            }
+        });
+    });
 
-# Fungsi untuk mengatur aturan firewall pada Linux
-def setup_firewall_linux():
-    rules = [
-        "iptables -A INPUT -p tcp --dport 22 -j DROP",  # Drop SSH connections
-        "iptables -A INPUT -p tcp --dport 80 -j ACCEPT",  # Allow HTTP connections
-        "iptables -A INPUT -p tcp --dport 443 -j ACCEPT",  # Allow HTTPS connections
-        "iptables -A INPUT -p tcp --dport 3306 -j DROP"  # Drop MySQL connections
-    ]
+    // Blokir IP yang melebihi 50 paket per detik
+    for (let [ip, count] of Object.entries(ipPacketCount)) {
+        if (count > 50) {
+            blockIp(ip, key);
+        }
+    }
+}
 
-    for rule in rules:
-        try:
-            subprocess.run(rule, shell=True, check=True)
-            print(f"[INFO] Applied firewall rule: {rule}")
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to apply firewall rule: {rule}")
-            print(f" - Error: {e}")
+// Fungsi untuk memblokir IP
+function blockIp(ip, key) {
+    const platform = os.platform();
+    let rule = '';
 
-# Fungsi untuk mengatur aturan firewall pada Windows
-def setup_firewall_windows():
-    rules = [
-        "netsh advfirewall firewall add rule name=\"Block SSH\" dir=in action=block protocol=TCP localport=22",
-        "netsh advfirewall firewall add rule name=\"Allow HTTP\" dir=in action=allow protocol=TCP localport=80",
-        "netsh advfirewall firewall add rule name=\"Allow HTTPS\" dir=in action=allow protocol=TCP localport=443",
-        "netsh advfirewall firewall add rule name=\"Block MySQL\" dir=in action=block protocol=TCP localport=3306"
-    ]
+    if (platform === 'linux') {
+        rule = `iptables -A INPUT -s ${ip} -j DROP`;
+    } else if (platform === 'win32') {
+        rule = `netsh advfirewall firewall add rule name="Block ${ip}" dir=in action=block remoteip=${ip}`;
+    }
 
-    for rule in rules:
-        try:
-            subprocess.run(rule, shell=True, check=True)
-            print(f"[INFO] Applied firewall rule: {rule}")
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to apply firewall rule: {rule}")
-            print(f" - Error: {e}")
+    try {
+        execSync(rule);
+        const alertMessage = `Blocked IP: ${ip} for exceeding packet limit`;
+        console.log(`[ALERT] ${alertMessage}`);
+        logEvent(alertMessage, key);
+    } catch (error) {
+        console.error(`[ERROR] Failed to block IP: ${ip}`);
+        console.error(` - Error: ${error}`);
+    }
+}
 
-# Fungsi untuk mengeraskan layanan yang berjalan pada Linux
-def harden_services_linux():
-    services_to_disable = ['apache2', 'mysql', 'ftp']  # Contoh layanan yang mungkin tidak diperlukan
+// Fungsi untuk memblokir paket ICMP, IGMP, dan RAW
+function blockUnwantedPackets() {
+    const platform = os.platform();
+    const rules = [];
 
-    for service in services_to_disable:
-        result = subprocess.run(['systemctl', 'is-active', service], stdout=subprocess.PIPE)
-        if b'active' in result.stdout:
-            subprocess.run(['systemctl', 'stop', service])
-            subprocess.run(['systemctl', 'disable', service])
-            print(f"[INFO] Disabled unnecessary service: {service}")
+    if (platform === 'linux') {
+        rules.push("iptables -A INPUT -p icmp -j DROP");
+        rules.push("iptables -A INPUT -p igmp -j DROP");
+        rules.push("iptables -A INPUT -p raw -j DROP");
+    } else if (platform === 'win32') {
+        rules.push('netsh advfirewall firewall add rule name="Block ICMP" dir=in action=block protocol=ICMPv4');
+        rules.push('netsh advfirewall firewall add rule name="Block IGMP" dir=in action=block protocol=2');
+        rules.push('netsh advfirewall firewall add rule name="Block RAW" dir=in action=block protocol=255');
+    }
 
-# Fungsi untuk mengeraskan layanan yang berjalan pada Windows
-def harden_services_windows():
-    services_to_disable = ['W3SVC', 'MySQL', 'FTPSVC']  # Contoh layanan yang mungkin tidak diperlukan
+    rules.forEach((rule) => {
+        try {
+            execSync(rule);
+            console.log(`[INFO] Applied packet block rule: ${rule}`);
+        } catch (error) {
+            console.error(`[ERROR] Failed to apply packet block rule: ${rule}`);
+            console.error(` - Error: ${error}`);
+        }
+    });
+}
 
-    for service in services_to_disable:
-        try:
-            subprocess.run(['sc', 'stop', service], check=True)
-            subprocess.run(['sc', 'config', service, 'start= disabled'], check=True)
-            print(f"[INFO] Disabled unnecessary service: {service}")
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to disable service: {service}")
-            print(f" - Error: {e}")
+// Fungsi utama untuk mengelola pertahanan
+function main() {
+    console.log("Running Super Defense Script...");
 
-# Fungsi untuk memantau pembaruan sistem pada Linux
-def check_for_updates_linux():
-    try:
-        subprocess.run(['apt-get', 'update'], check=True)
-        subprocess.run(['apt-get', 'upgrade', '-y'], check=True)
-        print("[INFO] System update completed.")
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Failed to update system: {e}")
+    // Generate encryption key for logs
+    const key = generateKey();
 
-# Fungsi untuk memantau pembaruan sistem pada Windows
-def check_for_updates_windows():
-    try:
-        subprocess.run(['powershell', 'Get-WindowsUpdate', '-Install', '-AcceptAll'], check=True)
-        print("[INFO] System update completed.")
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Failed to update system: {e}")
+    const platform = os.platform();
 
-# Fungsi utama untuk mengelola pertahanan
-def main():
-    print("Running Super Defense Script...")
-    
-    # Generate encryption key for logs
-    key = generate_key()
+    // Blokir paket yang tidak diinginkan
+    console.log("[INFO] Blocking unwanted packets...");
+    blockUnwantedPackets();
 
-    system = platform.system()
-    
-    # Blokir paket yang tidak diinginkan
-    print("[INFO] Blocking unwanted packets...")
-    block_unwanted_packets()
+    // Lakukan monitoring jaringan secara berkala
+    setInterval(() => {
+        console.log("[INFO] Monitoring network connections...");
+        monitorNetwork(key);
+    }, 60000); // Monitor setiap 60 detik
+}
 
-    # Lakukan monitoring jaringan secara berkala
-    while True:
-        print("[INFO] Monitoring network connections...")
-        monitor_network(key)
+// Inisialisasi Express
+const app = express();
 
-        # Terapkan aturan firewall
-        print("[INFO] Setting up firewall...")
-        if system == 'Linux':
-            setup_firewall_linux()
-        elif system == 'Windows':
-            setup_firewall_windows()
+// Middleware untuk parsing JSON
+app.use(express.json());
 
-        # Perkuat layanan yang berjalan
-        print("[INFO] Hardening system services...")
-        if system == 'Linux':
-            harden_services_linux()
-        elif system == 'Windows':
-            harden_services_windows()
+// Import userRoutes
+const userRoutes = require('./userRoutes');
 
-        # Periksa pembaruan sistem
-        print("[INFO] Checking for system updates...")
-        if system == 'Linux':
-            check_for_updates_linux()
-        elif system == 'Windows':
-            check_for_updates_windows()
+// Routes
+app.use('/api/users', userRoutes);
 
-        # Tunggu sebelum menjalankan monitoring lagi
-        time.sleep(60)  # Monitor setiap 60 detik
-
-if __name__ == "__main__":
-    main()
+// Start server
+app.listen(3000, () => {
+    console.log('Server running on port 3000');
+    main();
+});
